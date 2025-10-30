@@ -75,7 +75,7 @@ def mark_file(path: str, approved: bool):
         os.rename(path, new_path)
         print(f"File renamed -> {new_name}")
     else:
-        print(f"⚠ File {new_name} already exists, skipping rename.")
+        print(f"File {new_name} already exists, skipping rename.")
     return new_path
 
 
