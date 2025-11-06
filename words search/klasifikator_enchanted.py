@@ -2,6 +2,7 @@ import argparse
 import os
 import re
 import unicodedata
+import csv
 from typing import List, Dict, Tuple
 
 try:
@@ -36,40 +37,23 @@ def fuzzy_token_hits(tokens: List[str], keyword: str, threshold: int) -> List[Tu
     return hits
 
 def score_matches_for_file(raw_text: str, keywords: List[str],
-                           fuzzy_threshold: int = 80, use_fuzzy: bool = False) -> Tuple[int, Dict]:
-    ntext = normalize_text(raw_text)
+                           fuzzy_threshold: int = 80, use_fuzzy: bool = False) -> int:
     tokens = tokenize(raw_text)
-    details: Dict[str, Dict] = {"words": {}, "fuzzy": {}}
     score = 0
 
     for kw in keywords:
         nkw = normalize_text(kw)
-        pos = find_exact_word_positions(tokens, nkw)
-        if pos:
-            details["words"][kw] = {"count": len(pos), "positions": pos}
-            score += len(pos)
+        score += sum(1 for t in tokens if t == nkw)
 
-    if use_fuzzy and HAS_RAPIDFUZZ:
-        for kw in keywords:
-            nkw = normalize_text(kw)
-            hits = fuzzy_token_hits(tokens, nkw, fuzzy_threshold)
-            if hits:
-                details["fuzzy"][kw] = {
-                    "count": len(hits),
-                    "token_hits": [{"pos": i, "token": t, "score": s} for (i, t, s) in hits]
-                }
-                score += len(hits)
+        if use_fuzzy and HAS_RAPIDFUZZ:
+            score += sum(1 for t in tokens if fuzz.ratio(t, nkw) >= fuzzy_threshold)
 
-    return score, details
+    return score
 
 def mark_file(path: str, approved: bool):
     folder, name = os.path.split(path)
     base, ext = os.path.splitext(name)
-    if approved:
-        new_name = f"{base}_Approved{ext}"
-    else:
-        new_name = f"{base}_Canceled{ext}"
-
+    new_name = f"{base}_Approved{ext}" if approved else f"{base}_Canceled{ext}"
     new_path = os.path.join(folder, new_name)
     if not os.path.exists(new_path):
         os.rename(path, new_path)
@@ -78,21 +62,18 @@ def mark_file(path: str, approved: bool):
         print(f"File {new_name} already exists, skipping rename.")
     return new_path
 
-
 def _iter_paths(dir_or_file: str, extensions: List[str]) -> List[str]:
     paths: List[str] = []
     if os.path.isfile(dir_or_file):
         if not extensions or any(dir_or_file.lower().endswith(ext) for ext in extensions):
             paths.append(dir_or_file)
         return paths
-
     for root, _, files in os.walk(dir_or_file):
         for fname in files:
             if extensions and not any(fname.lower().endswith(ext) for ext in extensions):
                 continue
             paths.append(os.path.join(root, fname))
     return paths
-
 
 def search_and_label(dirpath: str,
                      keywords: List[str],
@@ -102,7 +83,7 @@ def search_and_label(dirpath: str,
                      fuzzy_threshold: int = 80):
     results = []
     if extensions is None:
-        extensions = [".txt", ".md", ".text", ".csv", ".log"]
+        extensions = [".txt", ".md", ".log"]
 
     for fp in _iter_paths(dirpath, extensions):
         try:
@@ -112,7 +93,7 @@ def search_and_label(dirpath: str,
             with open(fp, "r", encoding="latin-1", errors="ignore") as f:
                 raw = f.read()
 
-        score, details = score_matches_for_file(
+        score = score_matches_for_file(
             raw,
             keywords=keywords,
             fuzzy_threshold=fuzzy_threshold,
@@ -122,16 +103,9 @@ def search_and_label(dirpath: str,
         approved = score >= min_score
         mark_file(fp, approved)
 
-        results.append({
-            "path": fp,
-            "score": score,
-            "approved": approved,
-            "details": details
-        })
+        results.append("ano" if approved else "nie")
 
-    results.sort(key=lambda x: x["score"], reverse=True)
     return results
-
 
 def parse_comma_list(s: str) -> List[str]:
     if not s:
@@ -139,16 +113,30 @@ def parse_comma_list(s: str) -> List[str]:
     parts = re.split(r"[;,]", s)
     return [p.strip() for p in parts if p.strip()]
 
+def save_results_csv(results: List[str], out_csv: str):
+    with open(out_csv, "w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["approved_sk"])
+        for val in results:
+            writer.writerow([val])
+    print(f"\nCSV saved → {out_csv} (rows={len(results)})")
+
+def print_console_table(results: List[str]):
+    print("\nTabuľka výsledkov:")
+    print("-" * 20)
+    for i, val in enumerate(results, start=1):
+        print(f"{i:>3}. {val}")
+    print("-" * 20)
 
 def main():
-
-    ap = argparse.ArgumentParser(description="Keyword-based document classifier with auto-labeling.")
+    ap = argparse.ArgumentParser(description="Jednoduchý klasifikátor s tabuľkou áno/nie.")
     ap.add_argument("--dir", required=True, help="Directory or single file")
     ap.add_argument("--keywords", default="", help="Comma-separated keywords")
     ap.add_argument("--use-fuzzy", action="store_true", help="Enable fuzzy matching")
     ap.add_argument("--fuzzy-threshold", type=int, default=80)
     ap.add_argument("--min-score", type=int, default=2, help="Min hits for approval (default=2)")
     ap.add_argument("--extensions", default=".txt,.md,.log")
+    ap.add_argument("--out", default="results.csv", help="Path to CSV with results")
     args = ap.parse_args()
 
     keywords = parse_comma_list(args.keywords)
@@ -163,11 +151,8 @@ def main():
         fuzzy_threshold=args.fuzzy_threshold,
     )
 
-    print("\nSummary:")
-    for r in results:
-        label = "APPROVED" if r["approved"] else "CANCELED"
-        print(f"{r['path']}  →  {label}  (score={r['score']})")
-
+    print_console_table(results)
+    save_results_csv(results, args.out)
 
 if __name__ == "__main__":
     main()
